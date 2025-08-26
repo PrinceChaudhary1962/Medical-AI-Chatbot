@@ -40,7 +40,7 @@ if not api_key:
 client = OpenAI(api_key=api_key) if api_key else None
 
 # Default PDF path
-DEFAULT_PDF = "data/medical_copy_compressed.pdf"
+DEFAULT_PDF = "medical copy_compressed.pdf"
 
 @st.cache_resource(show_spinner=True)
 def build_index_from_path(pdf_path: str, chunk_tokens: int, overlap: int, emb_model: str):

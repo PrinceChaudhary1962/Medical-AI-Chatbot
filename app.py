@@ -1,13 +1,9 @@
 import os
-import io
-import time
-import json
 import streamlit as st
 import numpy as np
 
 from openai import OpenAI
 from utils import (
-    get_file_hash,
     extract_pdf_text,
     chunk_pages,
     build_embeddings_openai,
@@ -21,11 +17,12 @@ st.set_page_config(page_title="Medical RAG Chatbot", page_icon="🩺", layout="w
 
 st.markdown("""
 # 🩺 Medical RAG Chatbot
-Ask questions and get answers **grounded** in your uploaded medical ebook.
+Ask questions and get answers **grounded** in the provided medical ebook.
 
 > ⚠️ **Educational use only.** Not medical advice. Always seek the guidance of a licensed clinician.
 """)
 
+# Sidebar controls
 with st.sidebar:
     st.header("Settings")
     model = st.selectbox("Chat model", ["gpt-4o-mini", "gpt-4o"], index=0)
@@ -34,19 +31,21 @@ with st.sidebar:
     overlap = st.slider("Chunk overlap (tokens)", 0, 200, 80, 10)
     top_k = st.slider("Top-K passages", 1, 10, 4, 1)
     temperature = st.slider("Temperature", 0.0, 1.0, 0.2, 0.05)
-    st.divider()
-    uploaded = st.file_uploader("Upload a medical PDF", type=["pdf"])
-    st.caption("Upload your ebook to build a searchable index.")
+    st.caption("Default PDF from repo will be used (no upload needed).")
 
-# Resolve API key
+# API key
 api_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 if not api_key:
     st.warning("Set OPENAI_API_KEY in .streamlit/secrets.toml or as an environment variable.")
 client = OpenAI(api_key=api_key) if api_key else None
 
-# Cache index per file
+# Default PDF path
+DEFAULT_PDF = "data/medical_copy_compressed.pdf"
+
 @st.cache_resource(show_spinner=True)
-def build_index(file_bytes: bytes, chunk_tokens: int, overlap: int, emb_model: str):
+def build_index_from_path(pdf_path: str, chunk_tokens: int, overlap: int, emb_model: str):
+    with open(pdf_path, "rb") as f:
+        file_bytes = f.read()
     pages = extract_pdf_text(file_bytes)
     if not pages:
         raise ValueError("No extractable text found in the PDF.")
@@ -56,10 +55,21 @@ def build_index(file_bytes: bytes, chunk_tokens: int, overlap: int, emb_model: s
     meta = {"pages": pages, "chunks": chunks}
     return index, meta
 
-# Session state for chat
+index, meta = None, None
+if os.path.exists(DEFAULT_PDF):
+    with st.status("Building index from default PDF...", expanded=False):
+        try:
+            index, meta = build_index_from_path(DEFAULT_PDF, chunk_tokens, overlap, emb_model)
+            st.success("Index ready (default PDF loaded).")
+        except Exception as e:
+            st.error(f"Failed to index PDF: {e}")
+else:
+    st.error(f"Default PDF not found at {DEFAULT_PDF}. Please add it to the repo.")
+
+# Session state
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "Hi! Upload your medical PDF in the sidebar and ask me anything about its contents."}
+        {"role": "assistant", "content": "Hi! The medical PDF is preloaded. Ask me anything about its contents."}
     ]
 
 # Display chat
@@ -87,20 +97,6 @@ def assemble_messages(user_query: str, context_blocks: str):
     return [{"role": "system", "content": system},
             {"role": "user", "content": user}]
 
-index = None
-meta = None
-
-if uploaded is not None:
-    file_bytes = uploaded.read()
-    with st.status("Building index...", expanded=False):
-        try:
-            index, meta = build_index(file_bytes, chunk_tokens, overlap, emb_model)
-            st.success("Index ready.")
-        except Exception as e:
-            st.error(f"Failed to index PDF: {e}")
-else:
-    st.info("Please upload a medical PDF to start.")
-
 # Chat input
 prompt = st.chat_input("Ask a question about the ebook...")
 if prompt:
@@ -110,7 +106,7 @@ if prompt:
 
     with st.chat_message("assistant"):
         if index is None:
-            st.markdown("Please upload a PDF first so I can search it.")
+            st.markdown("PDF not indexed yet.")
         elif client is None:
             st.markdown("OpenAI API key not set. Add it in secrets or environment.")
         else:
@@ -130,7 +126,7 @@ if prompt:
                     answer = f"Error from model: {e}"
 
             conf = avg_confidence(hits)
-            badge = f"**Retrieval confidence:** {conf:.2f}"
+            badge = f"**Retrieval confidence:** {conf:.2f}**"
 
             st.markdown(answer)
             st.markdown(badge)
@@ -144,6 +140,5 @@ if prompt:
                 else:
                     st.write("No sources retrieved.")
 
-            # Always append disclaimer
             st.info("⚠️ Educational use only. Not medical advice. Consult a licensed clinician.")
             st.session_state.messages.append({"role": "assistant", "content": answer})
